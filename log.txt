@@ -1,0 +1,384 @@
+0506是一个数据集上egonet模型
+
+renumber不能去，不然爆显存
+
+0506基础上，在没有属性的时候x的构造需要优化，其他是用one hot编码
+
+0506基础上，每个节点抽子图过model，stack之后过线性层结果：
+上面的实验结果有问题，是用seq_end-1预测seq_end，但是又在seq_end上进行测试了
+应该是：     # 训练：seq_end-2预测seq_end-1 
+            # 测试：seq_end-1预测seq_end
+
+GCN+linear
+----------------------------------
+epoch:  99
+loss =0.63931918
+Link Prediction
+link_prd_auc_mean 0.6016735707534838
+link_prd_ap_mean 0.6037120252963906
+
+过了一遍model，寄！
+----------------------------------
+epoch:  99
+loss =0.65459335
+Link Prediction
+link_prd_auc_mean 0.591661806993907
+link_prd_ap_mean 0.584909088498107
+
+2024/05/24
+过model的math结果
+epoch:  99
+loss =0.41150483
+Link Prediction
+link_prd_auc_mean 0.8709650134563629
+link_prd_ap_mean 0.8697617389047458
+不过：
+epoch:  99
+loss =0.39861256
+Link Prediction
+link_prd_auc_mean 0.8695809304113802
+link_prd_ap_mean 0.8703419642912741
+
+ubuntu到math数据上能提1个点，确实有点用的
+
+0506 config：
+import torch
+
+seq_len=10   # 进行预训练的seq长度
+node_limit=50    # egonet节点数量限制
+batch_size=50
+lr=0.01
+decay=0.0001
+epochs=500
+patient=10
+
+input_dim=16
+hid_dim = 128
+ffn_hidden=512
+n_head=8
+layer_num = 8
+drop_prob=0
+
+device=torch.device("cuda:1" if torch.cuda.is_available() else "cpu")
+
+
+0524：把node_limit提到50
+
+
+我参悟到了，预训练是以egonet进行训练，但是300多个egonet之间的关系是训练不到的，
+所有拓扑信息都是通过一个egonet训练到，而不是egonet之间训练到，那对于链路预测任务
+就不能把每个节点视为egonet过model，而是应该按照all in one，把需要预测的边两端
+的节点对应的egonet过model直接用embedding预测
+loss就是CrossEntropyLoss就行了
+
+当务之急！x不能再用torch.ones(seq_len,node_num,self.input_dim)，纯拓扑不行
+的，需要有节点feature编码，VGRNN用的one hot，可以采用类似于位置编码的方式？
+
+=================================================
+0528结果：
+
+ubuntu->fb(还不错)打败GCN了
+
+【【【【seq_end = seq_len - 2】】】
+过model（evaluation_math_edgego.py）
+----------------------------------
+epoch:  99
+loss =0.67285532
+Link Prediction
+link_prd_auc_mean 0.9493772542910671
+link_prd_ap_mean 0.9277889408716578
+
+只有GCN（evaluation_gcn_math_edgego.py)
+----------------------------------
+epoch:  99
+loss =0.69178945
+Link Prediction
+link_prd_auc_mean 0.9417189256053698
+link_prd_ap_mean 0.9222107978301073
+
+======================================================
+0530:
+0528出问题了，节点数只有663，threshold设为5000，在取false_edge的时候
+取到633外的点相当于孤立结点，效果肯定好，设为663后：
+onlyGCN:
+----------------------------------
+epoch:  9
+loss =0.69324458
+Link Prediction
+link_prd_auc_mean 0.6040886046818198
+link_prd_ap_mean 0.6145134657727798
+
+MODEL:
+----------------------------------
+epoch:  56
+loss =0.69185299
+Link Prediction
+link_prd_auc_mean 0.6265587260730939
+link_prd_ap_mean 0.6275818772006353
+------------------------------------------------------------------------
+
+在math-overflow上：
+onlyGCN
+----------------------------------
+epoch:  68
+loss =0.69214946
+Link Prediction
+link_prd_auc_mean 0.9747296875
+link_prd_ap_mean 0.9632592664636663
+
+model:
+----------------------------------
+epoch:  99
+loss =0.59431678
+Link Prediction
+link_prd_auc_mean 0.9753078125
+link_prd_ap_mean 0.9701584947447389
+
+
+==================================================================================
+sx-askubuntu_6month
+seq_end = seq_len - 1
+threshold = 6000
+onlyGCN
+----------------------------------
+epoch:  99
+loss =0.69499767
+Link Prediction
+link_prd_auc_mean 0.24770146024878317
+link_prd_ap_mean 0.38282337146820106
+
+model
+----------------------------------
+epoch:  99
+loss =0.65224314
+Link Prediction
+link_prd_auc_mean 0.7725797728501893
+link_prd_ap_mean 0.7269463536599401
+
+其实不能算，因为是在ubuntu做训练又在ubuntu做test，但是证明确实有用
+
+pretarin_dict_0530_stackoverflow.pt
+取了10000个图，但是是6个月一次，效果不好（batchsize比较大）
+
+
+==================================================================================
+在stackoverflow上预训练的模型放在math上效果意外的好（pretarin_dict_0531_stackoverflow）
+0531版本是逐月训练，0530是6month训练
+0531：batch_size=512  seq_len=10   node_limit=30  epochs=1000
+每10个时间片取500个egonet，共计3000个
+>>0531版本:
+----------------------------------
+epoch:  99
+loss =0.69314706
+Link Prediction
+link_prd_auc_mean 0.7966101694915254
+link_prd_ap_mean 0.7966101694915254
+
+>>only_gcn:
+----------------------------------
+epoch:  99
+loss =0.70101845
+Link Prediction
+link_prd_auc_mean 0.18830795748348175
+link_prd_ap_mean 0.36733832384552123
+
+>>0530版本：
+跳变极大
+----------------------------------
+epoch:  97
+loss =0.69314736
+Link Prediction
+link_prd_auc_mean 0.4152542372881356
+link_prd_ap_mean 0.4615505335844319
+----------------------------------
+epoch:  98
+loss =0.69314736
+Link Prediction
+link_prd_auc_mean 0.23728813559322035
+link_prd_ap_mean 0.4154490551334502
+----------------------------------
+epoch:  99
+loss =0.69314724
+Link Prediction
+link_prd_auc_mean 0.5
+link_prd_ap_mean 0.5
+
+
+***下面需要在多个不同类型数据集上进行pretrain了！
+1.社交网络  fb-wosn-friends
+2.引文网络  cit-HepTh
+3.问答网络  stackoverflow  askubuntu
+4.交易网络  IA-PROSPER-LOANS   bit-coin-otc
+5.邮件网络  IA-ENRON-EMAIL-DYNAMIC
+
+测试：dblp  mathoverflow  soc-youtube-growth  
+=====================================================
+0603版本
+：pretarin_dict_0603_stackoverflow 不用影响力节点而是随机抽
+pretarin_dict_0603_stackoverflow_big就是比上面更大
+
+pretarin_dict_0603_stackoverflow在math上效果很好，现在应该fewshot改改，直接
+跟vgrnn evolveGcn DySAT比
+evaluation_edgego_finetuning.py
+
+==========================================================
+0611
+问题：egonet的中心节点是否需要是出现频率很高的节点？
+pretrain_ego_mix_copy上开始随机抽点，完全跟频率无关
+batch_size 2048爆显存
+---------------------------------------------------------
+数据集fb-wosn-friends
+加载edge
+生成子图划分
+graph长度为: 29
+seq长度设置为: 10
+该数据集共采样egonet1666个
+加载feature
+---------------------------------------------------------
+数据集ca-cit-HepTh
+加载edge
+生成子图划分
+graph长度为: 61
+seq长度设置为: 10
+该数据集共采样egonet21个
+加载feature
+---------------------------------------------------------
+数据集sx-stackoverflow
+加载edge
+生成子图划分
+graph长度为: 69
+seq长度设置为: 10
+该数据集共采样egonet3999个
+加载feature
+---------------------------------------------------------
+数据集sx-askubuntu
+加载edge
+生成子图划分
+graph长度为: 68
+seq长度设置为: 10
+该数据集共采样egonet3118个
+加载feature
+---------------------------------------------------------
+数据集ia-prosper-loans
+加载edge
+生成子图划分
+graph长度为: 64
+seq长度设置为: 10
+该数据集共采样egonet2886个
+加载feature
+---------------------------------------------------------
+数据集soc-bitcoin
+加载edge
+生成子图划分
+graph长度为: 60
+seq长度设置为: 10
+该数据集共采样egonet2577个
+加载feature
+---------------------------------------------------------
+数据集ia-enron-email-dynamic
+加载edge
+生成子图划分
+graph长度为: 59
+seq长度设置为: 10
+该数据集共采样egonet563个
+
+14830
+-----------------------------------------------------------------------------------------------------------
+以下是pretrain_ego_mix:
+---------------------------------------------------------
+数据集fb-wosn-friends
+加载edge
+生成子图划分
+graph长度为: 29
+seq长度设置为: 10
+该数据集共采样egonet2410个
+加载feature
+---------------------------------------------------------
+数据集ca-cit-HepTh
+加载edge
+生成子图划分
+graph长度为: 61
+seq长度设置为: 10
+该数据集共采样egonet12个
+加载feature
+---------------------------------------------------------
+数据集sx-stackoverflow
+加载edge
+生成子图划分
+graph长度为: 69
+seq长度设置为: 10
+该数据集共采样egonet3673个
+加载feature
+---------------------------------------------------------
+数据集sx-askubuntu
+加载edge
+生成子图划分
+graph长度为: 68
+seq长度设置为: 10
+该数据集共采样egonet1691个
+加载feature
+---------------------------------------------------------
+数据集ia-prosper-loans
+加载edge
+生成子图划分
+graph长度为: 64
+seq长度设置为: 10
+该数据集共采样egonet3656个
+加载feature
+---------------------------------------------------------
+数据集soc-bitcoin
+加载edge
+生成子图划分
+graph长度为: 60
+seq长度设置为: 10
+该数据集共采样egonet3036个
+加载feature
+---------------------------------------------------------
+数据集ia-enron-email-dynamic
+加载edge
+生成子图划分
+graph长度为: 59
+seq长度设置为: 10
+该数据集共采样egonet624个
+加载feature
+
+151028
+
+
+------------------------------------------------------
+0614
+few shot真的合理吗？
+----------------------------------------------------------
+0617
+结构结构结构
+方法1.egonet的gcn不完全readout，t-1时刻graphembd做gpt预训练得到t时刻graphembd，然后和t-1时刻nodeemb做cat然后过全连接得到t时刻nodeemb，图生成
+方法2.egonet视为一个点，egonet相当于图粗化，然后每个egonet的centernode之间的连接来捕获结构信息
+
+目前更趋向于第1种
+
+--------------------------------------------------------
+0620加入structure进行图重构
+changeloss是要改掉loss_ce，embedding之间的loss也可以借鉴VGRNN
+先这样吧
+
+链路预测两种方式：
+1.pos_neg边两端节点取egonet，做graphemb做二分类
+2.直接整个图塞进去，通过邻接矩阵求
+
+-----------------------------------------------------
+0702
+model.py是没用structuembeddingre，但是不是graphemb算loss，而是nodeemb算cosineloss
+对应pretrain_ego
+
+0719
+节点完全没有特异性拓扑上大部分egonet被识别成同种subgraph， embedding体现出高趋同性
+[(0, 1), (3, 10), (1, 0), (1, 0), (1, 0), (0, 1), (1, 0), (1, 0), (6, 10), (0, 1), (11, 112), (0, 1), (6, 7), (12, 38), (27, 29), (0, 1), (1, 0), (10, 13), (0, 1), (1, 0), (0, 8), (39, 68), (0, 1), (35, 7), (1, 0), (0, 1), (0, 1), (0, 2), (0, 1), (0, 1), (1, 0), (0, 1), (10, 13), (0, 1), (1, 0), (1, 0), (1, 0), (0, 1), (71, 169), (0, 1), (0, 1), (88, 133), (0, 4), (0, 1), (0, 1), (0, 1), (26, 45), (0, 1), (13, 53), (43, 190), (5, 6), (0, 1), (0, 1), (4, 7), (0, 1), (0, 1), (0, 1), (1, 0), (1, 0), (9, 10), (0, 1), (0, 1), (0, 1), (13, 15), (121, 159), (84, 110), (0, 1), (63, 109), (8, 65), (25, 28), (56, 190), (1, 0), (0, 1), (1, 0), (0, 1), (0, 1), (0, 1), (0, 1), (1, 2), (28, 35), (1, 0), (0, 1), (0, 1), (0, 1), (1, 0), (52, 72), (0, 1), (1, 0), (0, 1), (1, 0), (0, 1), (0, 1), (11, 6), (104, 146), (0, 1), (1, 0), (0, 1), (0, 1), (1, 0), (0, 1), (50, 51), (8, 12), (0, 3), (77, 79), (0, 1), (1, 0), (106, 140), (54, 83), (0, 1), (0, 1), (1, 0), (0, 1), (1, 3), (15, 7), (1, 0), (59, 95), (0, 1), (60, 270), (1, 0), (0, 1), (0, 1), (86, 140), (1, 0), (1, 0), (74, 78), (16, 45), (42, 80), (0, 1), (0, 1), (0, 1), (0, 1), (1, 0), (0, 1), (0, 1), (55, 105), (0, 1), (1, 0), (41, 61), (1, 0), (131, 204), (0, 1), (3, 2), (72, 147), (0, 13), (0, 1), (0, 2), (0, 1), (1, 0), (1, 0), (3, 10), (0, 1), (1, 17), (0, 1), (0, 1)]
+prd nodes出现01，应该是自环边出问题了？
+
+
+sep版本：
+原先是所有时间片节点集合到每个时间片找sub graph，有可能会泄露
+现在每个时间片根据center找成员
+带来改动：
+1.每个时间片节点数量不固定，需要修改model
+2.原先是用center的emb帮助n时刻的node emb预测n+1时刻的node emb，现在直接改为ego emb预测ego emb
