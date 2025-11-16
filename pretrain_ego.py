@@ -38,7 +38,53 @@ for egonet in egonet_edges:
         x.append(node_features)
     egonet_x.append(x)
 
+def contrastive_next_step_loss(predicted_embs, target_embs, temperature=0.07):
+    """
+    使用batch内负样本的对比学习损失（InfoNCE Loss）
+
+    Args:
+        predicted_embs: [B, L-1, d] - batch内所有序列的预测
+        target_embs: [B, L-1, d] - batch内所有序列的目标
+        temperature: 温度参数，默认0.07
+
+    Returns:
+        InfoNCE对比学习损失
+
+    损失函数形式:
+        L_gen = -1/(B(L-1)) Σ_{i=1}^{B(L-1)} log [exp(⟨ê_i, e_i⟩/τ) / Σ_{j=1}^{B(L-1)} exp(⟨ê_i, e_j⟩/τ)]
+
+    其中:
+        - B是batch size
+        - i索引所有batch内的时间步
+        - ê_i是预测的embedding
+        - e_i是对应的真实embedding
+        - 分母中的负样本来自batch内其他时间步和序列
+    """
+    B, L_minus_1, d = predicted_embs.shape
+
+    # 展平为 [B*(L-1), d]
+    pred_flat = predicted_embs.reshape(-1, d)
+    target_flat = target_embs.reshape(-1, d)
+
+    # 归一化
+    pred_flat = F.normalize(pred_flat, dim=-1)
+    target_flat = F.normalize(target_flat, dim=-1)
+
+    # 计算相似度矩阵 [B*(L-1), B*(L-1)]
+    sim_matrix = torch.matmul(pred_flat, target_flat.T) / temperature
+
+    # 对角线是正样本(每个预测对应其真实目标)
+    labels = torch.arange(B * L_minus_1).to(pred_flat.device)
+
+    # InfoNCE损失
+    loss = F.cross_entropy(sim_matrix, labels)
+
+    return loss
+
+
+# 保留原有的损失函数作为备选（已弃用）
 def loss_re(emb_re,target):
+    """已弃用：原始的余弦相似度损失函数"""
     cos = nn.CosineSimilarity(dim=-1, eps=1e-6)
     batch_size, time_length, emb_dim = emb_re.shape
     loss=0
@@ -74,7 +120,8 @@ for i in range(epochs):
     # print(ego_batch[0][5])
     # print(ego_batch[64][5])
     # print('loss backward')
-    loss=loss_re(prd_batch[:][:-1],ego_batch[:][1:])
+    # 使用对比学习损失（InfoNCE）替代原有的余弦相似度损失
+    loss=contrastive_next_step_loss(prd_batch[:][:-1],ego_batch[:][1:])
     loss.backward()
     optimizer.step()
     print("----------------------------------")
